@@ -1,22 +1,45 @@
 # fastapi_datatables/models.py
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List, Optional, Generic, TypeVar
 from pydantic import BaseModel
-from typing import Generic, TypeVar, Optional
 
 T = TypeVar("T")
 
+
+# --- DataTables Request Models ---
+
+
+class DataTablesSearch(BaseModel):
+    value: str = ""
+    regex: bool = False
+
+
+class DataTablesColumn(BaseModel):
+    data: str = ""
+    name: str
+    searchable: bool = True
+    orderable: bool = True
+    search: DataTablesSearch = DataTablesSearch()
+
+
+class DataTablesOrder(BaseModel):
+    column: int
+    dir: str  # 'asc' or 'desc'
+
+
 class DataTablesRequest(BaseModel):
-    draw: Optional[int] = 1  # Provide a default value
-    start: Optional[int] = 0
-    length: Optional[int] = 10
-    search: Optional[Dict[str, str]] = {}
-    order: Optional[List[Dict[str, Any]]] = []
-    columns: Optional[List[Dict[str, Any]]] = []
-    extra: Optional[Dict[str, Any]] = {}
+    draw: int
+    start: int = 0
+    length: int = 10
+    search: DataTablesSearch = DataTablesSearch()
+    order: List[DataTablesOrder] = []
+    columns: List[DataTablesColumn] = []
+    extra: Optional[Dict[str, Any]] = None
 
 
-class DataTablesResponse(BaseModel,Generic[T]):
+# --- DataTables Response Model ---
+
+
+class DataTablesResponse(BaseModel, Generic[T]):
     draw: int
     recordsTotal: int
     recordsFiltered: int

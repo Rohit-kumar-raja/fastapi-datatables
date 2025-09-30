@@ -1,30 +1,16 @@
-# fastapi_datatables/database.py
-from typing import Any, Type
-
+from typing import Type
 from sqlalchemy import Select, func, select
-
-
-class DatabaseBackend:
-    def __init__(self, db_session: Any):
-        self.db_session = db_session  # Could be SQLAlchemy, Databases, etc.
-
-    def get_total_records(self, model) -> int:
-        """Count the total number of records (no filters)"""
-        raise NotImplementedError
-
-    def get_filtered_records(self, query) -> int:
-        """Count filtered number of records (with search filters)"""
-        raise NotImplementedError
-
-    def execute_query(self, query):
-        """Executes the final, constructed query"""
-        raise NotImplementedError
+from sqlalchemy.ext.asyncio import AsyncSession
+from .schema import DataTablesRequest
+from .utils import global_filter, column_filter, order_column
+from .contract import DatabaseBackend
 
 
 class SQLAlchemyBackend(DatabaseBackend):  # Specific database backend
+    db_session: AsyncSession = None
+
     def __init__(self, db_session):
         super().__init__(db_session)
-        # Additional SQLAlchemy-specific initialization could go here
 
     async def get_total_records(self, model: Type) -> int:
         stmt = select(func.count()).select_from(model)
@@ -37,5 +23,21 @@ class SQLAlchemyBackend(DatabaseBackend):  # Specific database backend
         return result.scalar_one()
 
     async def execute_query(self, stmt: Select):
-        result = await self.db_session.execute(stmt)
-        return result.scalars().all()
+        async with self.db_session as session:  # ensures connection is returned
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
+    async def get_filtered_query(self, stmt: Select, request_data: DataTablesRequest):
+        search_value = (
+            request_data.search.value.strip() if request_data.search.value else ""
+        )
+        stmt = global_filter(search_value, stmt, request_data.columns, self.model)
+
+        stmt = column_filter(stmt, request_data.columns, self.model)
+
+        return stmt
+
+    async def apply_ordering(
+        self, stmt: Select, request_data: DataTablesRequest
+    ) -> Select:
+        return order_column(self.model, stmt, request_data)
