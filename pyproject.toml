@@ -1,13 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "fastapi-datatables"
+name = "fp-datatables"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
+license = { text = "MIT" }
 dependencies = [
-    "aiosqlite>=0.21.0",
-    "faker>=37.8.0",
-    "fastapi>=0.117.1",
+    "build>=1.3.0",
     "sqlalchemy>=2.0.43",
-    "uvicorn>=0.37.0",
+    "twine>=6.2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Rohit-kumar-raja/fastapi-datatables"
