@@ -16,3 +16,11 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/Rohit-kumar-raja/fastapi-datatables"
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "faker>=40.5.1",
+    "fastapi>=0.134.0",
+    "uvicorn>=0.41.0",
+]

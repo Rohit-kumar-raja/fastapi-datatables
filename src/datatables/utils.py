@@ -78,8 +78,12 @@ def column_filter(
     column_conditions = []
 
     for col in columns:
+        if not col.searchable:
+            continue
         field = col.name
-        value = col.search.value
+        value = col.search.value.strip() if col.search.value else ""
+        if not value:
+            continue
 
         try:
             current_model = model
@@ -124,8 +128,12 @@ def order_column(model: type, stmt: Select, request_data: DataTablesRequest) -> 
         return stmt
     for order in request_data.order:
         col_index = order.column
-
-        col_name = request_data.columns[int(col_index)].name
+        col = request_data.columns[int(col_index)]
+        if not col.orderable:
+            continue
+        col_name = col.name
+        if not col_name:
+            continue
         direction = order.dir
 
         try:
