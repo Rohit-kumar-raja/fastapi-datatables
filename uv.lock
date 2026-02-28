@@ -93,7 +93,7 @@ wheels = [
 
 [[package]]
 name = "fp-datatables"
-version = "0.1.2"
+version = "0.1.4"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

@@ -1,11 +1,104 @@
-from sqlalchemy import Select, and_, or_
+from sqlalchemy import Select, and_, or_, cast, Date, DateTime, TIMESTAMP
 from sqlalchemy.orm import aliased
 
 from .exceptions import ConfigurationError
 from .exceptions import InvalidColumnError
 from sqlalchemy.orm.attributes import InstrumentedAttribute
-from sqlalchemy import String, Text
+from sqlalchemy import String, Text, Integer, not_
 from .schema import DataTablesRequest, DataTablesColumn
+from .enum import MatchMode
+
+
+def build_condition(column_attr, match_mode: MatchMode, value: str):
+    """
+    Build a SQLAlchemy filter condition based on column type and match mode.
+    Handles String/Text, Integer, and DateTime/Date/TIMESTAMP columns.
+    """
+    try:
+        column_type = column_attr.type
+    except AttributeError:
+        # hybrid_property or unsupported type
+        return None
+
+    if isinstance(column_type, (String, Text)):
+        if match_mode == MatchMode.CONTAINS:
+            return column_attr.ilike(f"%{value}%")
+        elif match_mode == MatchMode.EQUALS:
+            return column_attr == value
+        elif match_mode == MatchMode.STARTS_WITH:
+            return column_attr.ilike(f"{value}%")
+        elif match_mode == MatchMode.ENDS_WITH:
+            return column_attr.ilike(f"%{value}")
+        elif match_mode == MatchMode.NOT_CONTAINS:
+            return not_(column_attr.ilike(f"%{value}%"))
+        elif match_mode == MatchMode.NOT_EQUALS:
+            return column_attr != value
+
+    elif isinstance(column_type, Integer):
+        try:
+            int_value = int(value)
+            if match_mode == MatchMode.EQUALS:
+                return column_attr == int_value
+            elif match_mode == MatchMode.NOT_EQUALS:
+                return column_attr != int_value
+        except ValueError:
+            pass  # Ignore invalid integers
+
+    elif isinstance(column_type, (DateTime, Date, TIMESTAMP)):
+        db_date_only = cast(column_attr, Date)
+        col_as_str = cast(db_date_only, String)
+        clean_value = value.split("T")[0]
+
+        if match_mode == MatchMode.CONTAINS:
+            return col_as_str.ilike(f"%{clean_value}%")
+        elif match_mode == MatchMode.EQUALS:
+            return col_as_str == clean_value
+        elif match_mode == MatchMode.STARTS_WITH:
+            return col_as_str.ilike(f"{clean_value}%")
+        elif match_mode == MatchMode.ENDS_WITH:
+            return col_as_str.ilike(f"%{clean_value}")
+        elif match_mode == MatchMode.NOT_CONTAINS:
+            return not_(col_as_str.ilike(f"%{clean_value}%"))
+        elif match_mode == MatchMode.NOT_EQUALS:
+            return col_as_str != clean_value
+
+    return None
+
+
+def resolve_column(model, column_path: str, joins: dict, aliased_models: dict):
+    """
+    Resolve a dotted column path (e.g. 'user.name') to a SQLAlchemy column attribute.
+    Handles relationship traversal with aliased joins.
+    Returns (column_attr, current_model) or (None, None) on failure.
+    """
+    current_model = model
+    current_path = []
+    current_attr = None
+
+    parts = column_path.split(".")
+    for i, part in enumerate(parts):
+        current_path.append(part)
+        path_str = ".".join(current_path)
+
+        if i < len(parts) - 1:  # it's a relation
+            if path_str not in aliased_models:
+                relation_attr: InstrumentedAttribute = getattr(current_model, part)
+                related_model = relation_attr.property.mapper.class_
+                aliased_model = aliased(related_model)
+                aliased_models[path_str] = aliased_model
+                joins[path_str] = (relation_attr, aliased_model)
+            current_model = aliased_models[path_str]
+        else:  # it's the final column
+            current_attr = getattr(current_model, part)
+
+    return current_attr
+
+
+def apply_joins(stmt: Select, joins: dict) -> Select:
+    """Apply all accumulated joins to the statement."""
+    for key, (relation_attr, aliased_model) in joins.items():
+        stmt = stmt.join(aliased_model, relation_attr)
+    return stmt
 
 
 def global_filter(
@@ -22,46 +115,23 @@ def global_filter(
             if col and col.searchable:
                 column_path = col.name
                 try:
-                    current_model = model
-                    current_path = []
-                    current_attr = None
-
-                    parts = column_path.split(".")
-                    for i, part in enumerate(parts):
-                        current_path.append(part)
-                        path_str = ".".join(current_path)
-
-                        if i < len(parts) - 1:  # it's a relation
-                            if path_str not in aliased_models:
-                                relation_attr: InstrumentedAttribute = getattr(
-                                    current_model, part
-                                )
-                                related_model = relation_attr.property.mapper.class_
-                                aliased_model = aliased(related_model)
-                                aliased_models[path_str] = aliased_model
-                                joins[path_str] = (relation_attr, aliased_model)
-                            current_model = aliased_models[path_str]
-                        else:  # it's the final column
-                            column_attr = getattr(current_model, part)
-                            current_attr = column_attr
+                    current_attr = resolve_column(
+                        model, column_path, joins, aliased_models
+                    )
 
                     if current_attr is not None:
-                        try:
-                            column_type = current_attr.type
-                            if isinstance(column_type, (String, Text)):
-                                search_conditions.append(
-                                    current_attr.ilike(f"%{search_value}%")
-                                )
-                        except AttributeError:
-                            # In case of a hybrid_property or unsupported type, skip
-                            pass
+                        condition = build_condition(
+                            current_attr, MatchMode.CONTAINS, search_value
+                        )
+                        if condition is not None:
+                            search_conditions.append(condition)
 
                 except AttributeError:
-                    raise InvalidColumnError(f"Invalid column path: {col['field']}")
+                    raise InvalidColumnError(
+                        f"Invalid column path: {column_path}"
+                    )
 
-        # Apply joins
-        for key, (relation_attr, aliased_model) in joins.items():
-            stmt = stmt.join(aliased_model, relation_attr)
+        stmt = apply_joins(stmt, joins)
 
         if search_conditions:
             stmt = stmt.where(or_(*search_conditions))
@@ -86,36 +156,19 @@ def column_filter(
             continue
 
         try:
-            current_model = model
-            current_path = []
-            current_attr = None
-
-            parts = field.split(".")
-            for i, part in enumerate(parts):
-                current_path.append(part)
-                path_str = ".".join(current_path)
-
-                if i < len(parts) - 1:  # is relation
-                    if path_str not in aliased_models:
-                        relation_attr = getattr(current_model, part)
-                        related_model = relation_attr.property.mapper.class_
-                        aliased_model = aliased(related_model)
-                        aliased_models[path_str] = aliased_model
-                        joins[path_str] = (relation_attr, aliased_model)
-                    current_model = aliased_models[path_str]
-                else:  # final column
-                    current_attr: Select = getattr(current_model, part)
+            current_attr = resolve_column(model, field, joins, aliased_models)
 
             if current_attr is not None:
-                condition = current_attr.ilike(f"%{value}%")
+                condition = build_condition(
+                    current_attr, MatchMode.CONTAINS, value
+                )
                 if condition is not None:
                     column_conditions.append(condition)
 
         except AttributeError:
             raise InvalidColumnError(f"Invalid column path: {field}")
 
-    for key, (relation_attr, aliased_model) in joins.items():
-        stmt = stmt.join(aliased_model, relation_attr)
+    stmt = apply_joins(stmt, joins)
 
     if column_conditions:
         stmt = stmt.where(and_(*column_conditions))
@@ -137,36 +190,17 @@ def order_column(model: type, stmt: Select, request_data: DataTablesRequest) -> 
         direction = order.dir
 
         try:
-            current_model = model
-            current_path = []
+            joins = {}
             aliased_models = {}
-            joins_for_order = {}
-            parts = col_name.split(".")
+            order_col = resolve_column(model, col_name, joins, aliased_models)
 
-            for i, part in enumerate(parts):
-                current_path.append(part)
-                path_str = ".".join(current_path)
-
-                if i < len(parts) - 1:  # relation part
-                    if path_str not in aliased_models:
-                        relation_attr = getattr(current_model, part)
-                        related_model = relation_attr.property.mapper.class_
-                        aliased_model = aliased(related_model)
-                        aliased_models[path_str] = aliased_model
-                        joins_for_order[path_str] = (relation_attr, aliased_model)
-                    current_model = aliased_models[path_str]
-                else:  # final column part
-                    order_column = getattr(current_model, part)
-
-            # Apply necessary joins
-            for _, (relation_attr, aliased_model) in joins_for_order.items():
-                stmt = stmt.join(aliased_model, relation_attr)
+            stmt = apply_joins(stmt, joins)
 
             # Apply ordering
             if direction == "asc":
-                stmt = stmt.order_by(order_column.asc())
+                stmt = stmt.order_by(order_col.asc())
             elif direction == "desc":
-                stmt = stmt.order_by(order_column.desc())
+                stmt = stmt.order_by(order_col.desc())
             else:
                 raise ConfigurationError("Order direction must be 'asc' or 'desc'")
 
